@@ -1,5 +1,5 @@
 from pathlib import Path
-import fitz
+import pymupdf as fitz
 from docx import Document as DocxDocument
 
 SUPPORTED = {".pdf", ".txt", ".md", ".docx"}

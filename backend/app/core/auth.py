@@ -8,6 +8,9 @@ def get_current_user(authorization: str | None = Header(default=None)) -> str:
     token = authorization.split(" ", 1)[1].strip()
     try:
         claims = supabase.auth.get_claims(token)
+
+        
+
         user_id = claims.get("claims", {}).get("sub")
         if not user_id:
             raise ValueError("No subject in JWT")

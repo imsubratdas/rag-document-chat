@@ -46,12 +46,20 @@ async def upload_document(
         }).eq("id", document_id).eq("user_id", user_id).execute()
 
         return {"document_id": document_id, "filename": file.filename, "chunks": len(chunks)}
-    except Exception as exc:
+    except Exception:
         if "document_id" in locals():
-            supabase.table("documents").update({"status": "error"}).eq(
+            supabase.table("documents").update(
+                {"status": "error"}
+            ).eq(
                 "id", document_id
-            ).eq("user_id", user_id).execute()
-        raise HTTPException(500, f"Document processing failed: {exc}")
+            ).eq(
+                "user_id", user_id
+            ).execute()
+
+        raise HTTPException(
+            status_code=500,
+            detail="Document processing failed. Please try again.",
+        )
     finally:
         Path(tmp_path).unlink(missing_ok=True)
 

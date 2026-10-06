@@ -44,7 +44,7 @@ only the source numbers you actually used.
         config=types.GenerateContentConfig(
             max_output_tokens=1000,
             thinking_config=types.ThinkingConfig(
-             thinking_level="low"
+                thinking_level="low"
             ),
         ),
     )
