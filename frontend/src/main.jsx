@@ -1,7 +1,12 @@
-import React, {useEffect, useState} from "react";
-import {createRoot} from "react-dom/client";
-import {createClient} from "@supabase/supabase-js";
+import React, { useEffect, useState } from "react";
+import { createRoot } from "react-dom/client";
+import { createClient } from "@supabase/supabase-js";
 import "./style.css";
+
+import { Navbar } from "./components/Navbar";
+import { LandingPage } from "./components/LandingPage";
+import { AuthModal } from "./components/AuthModal";
+import { Workspace } from "./components/Workspace";
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
@@ -12,11 +17,12 @@ const supabase = isSupabaseConfigured
   ? createClient(SUPABASE_URL, SUPABASE_KEY)
   : null;
 
-async function api(path, options={}) {
+// Authenticated API client attaching Supabase access token
+async function api(path, options = {}) {
   const headers = new Headers(options.headers || {});
   if (supabase) {
     try {
-      const {data} = await supabase.auth.getSession();
+      const { data } = await supabase.auth.getSession();
       const token = data?.session?.access_token;
       if (token) {
         headers.set("Authorization", `Bearer ${token}`);
@@ -25,22 +31,45 @@ async function api(path, options={}) {
       console.warn("Could not retrieve Supabase session:", e);
     }
   }
-  return fetch(`${API_URL}${path}`, {...options, headers});
+  return fetch(`${API_URL}${path}`, { ...options, headers });
 }
 
 function MissingConfigScreen() {
   return (
-    <main className="auth">
-      <div style={{background: "#11172a", padding: "30px", borderRadius: "12px", maxWidth: "480px", border: "1px solid #303a58"}}>
-        <h1 style={{marginTop: 0}}>Configuration Required</h1>
-        <p>Supabase environment variables are missing. Please add them to your <code>.env</code> file (or Vercel project environment settings):</p>
-        <ul style={{textAlign: "left", lineHeight: "1.8", color: "#a5b4fc"}}>
-          <li><code>VITE_SUPABASE_URL</code></li>
-          <li><code>VITE_SUPABASE_PUBLISHABLE_KEY</code></li>
-          <li><code>VITE_API_URL</code> (Optional, defaults to <code>http://localhost:8000</code>)</li>
+    <div style={{
+      minHeight: "100vh",
+      display: "grid",
+      placeItems: "center",
+      padding: "24px",
+      background: "#08090d",
+      color: "#f7f8f8"
+    }}>
+      <div style={{
+        background: "#0e1017",
+        padding: "36px",
+        borderRadius: "14px",
+        maxWidth: "480px",
+        border: "1px solid rgba(255, 255, 255, 0.12)",
+        boxShadow: "0 20px 50px rgba(0,0,0,0.8)"
+      }}>
+        <h2 style={{ marginTop: 0, fontSize: "20px" }}>Configuration Required</h2>
+        <p style={{ color: "#8a8f98", lineHeight: "1.6" }}>
+          Supabase environment variables are missing. Please configure them in your environment settings:
+        </p>
+        <ul style={{
+          textAlign: "left",
+          lineHeight: "2",
+          color: "#a5b4fc",
+          fontFamily: "monospace",
+          fontSize: "13px",
+          marginTop: "16px"
+        }}>
+          <li>VITE_SUPABASE_URL</li>
+          <li>VITE_SUPABASE_PUBLISHABLE_KEY</li>
+          <li>VITE_API_URL (defaults to http://localhost:8000)</li>
         </ul>
       </div>
-    </main>
+    </div>
   );
 }
 
@@ -49,147 +78,247 @@ function App() {
     return <MissingConfigScreen />;
   }
 
-  const [session,setSession] = useState(null);
-  const [email,setEmail] = useState("");
-  const [password,setPassword] = useState("");
-  const [docs,setDocs] = useState([]);
-  const [chats,setChats] = useState([]);
-  const [chat,setChat] = useState(null);
-  const [messages,setMessages] = useState([]);
-  const [question,setQuestion] = useState("");
-  const [busy,setBusy] = useState(false);
-  const [errorMessage,setErrorMessage] = useState("");
+  const [session, setSession] = useState(null);
+  const [viewMode, setViewMode] = useState("landing"); // "landing" | "workspace"
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [authModalMode, setAuthModalMode] = useState("login");
+  const [authError, setAuthError] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
 
+  // Workspace Data
+  const [docs, setDocs] = useState([]);
+  const [chats, setChats] = useState([]);
+  const [activeChat, setActiveChat] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [uploadBusy, setUploadBusy] = useState(false);
+
+  // Listen to Supabase Auth state
   useEffect(() => {
-    supabase.auth.getSession()
-      .then(({data}) => setSession(data?.session || null))
-      .catch(err => {
+    supabase.auth
+      .getSession()
+      .then(({ data }) => {
+        const s = data?.session || null;
+        setSession(s);
+        if (s) {
+          setViewMode("workspace");
+        }
+      })
+      .catch((err) => {
         console.error("Auth session check error:", err);
-        setErrorMessage("Unable to connect to Supabase. If your database is paused/inactive, restore it in Supabase dashboard.");
       });
 
-    const {data:{subscription}} = supabase.auth.onAuthStateChange((_e,s) => setSession(s));
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_e, s) => {
+      setSession(s);
+      if (s) {
+        setViewMode("workspace");
+      }
+    });
+
     return () => subscription.unsubscribe();
-  },[]);
+  }, []);
 
-  useEffect(() => { if(session) refresh(); },[session]);
+  // Refresh documents and chats when session is active
+  useEffect(() => {
+    if (session) {
+      refreshData();
+    }
+  }, [session]);
 
-  async function refresh() {
+  async function refreshData() {
     try {
-      const [d,c] = await Promise.all([
+      const [dRes, cRes] = await Promise.all([
         api("/api/documents"),
-        api("/api/chat/conversations")
+        api("/api/chat/conversations"),
       ]);
-      if (d.ok) {
-        const docsData = await d.json();
-        if (Array.isArray(docsData)) setDocs(docsData);
-      } else {
-        const err = await d.json().catch(() => ({}));
-        console.warn("Documents fetch error:", err);
+
+      if (dRes.ok) {
+        const dData = await dRes.json();
+        if (Array.isArray(dData)) setDocs(dData);
       }
-      if (c.ok) {
-        const chatsData = await c.json();
-        if (Array.isArray(chatsData)) setChats(chatsData);
-      } else {
-        const err = await c.json().catch(() => ({}));
-        console.warn("Chats fetch error:", err);
+
+      if (cRes.ok) {
+        const cData = await cRes.json();
+        if (Array.isArray(cData)) {
+          setChats(cData);
+          // If no active chat but chats exist, select the most recent one
+          if (!activeChat && cData.length > 0) {
+            openChat(cData[0]);
+          }
+        }
       }
     } catch (err) {
-      console.error("Refresh error:", err);
+      console.error("Error refreshing workspace data:", err);
     }
   }
 
-  async function login(e) {
-    e.preventDefault();
-    setErrorMessage("");
+  // Authentication handlers
+  async function handleLogin(email, password) {
+    setAuthError("");
+    setAuthBusy(true);
     try {
-      const {error} = await supabase.auth.signInWithPassword({email,password});
-      if(error) {
-        alert(error.message);
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) {
+        setAuthError(error.message);
+      } else if (data?.session) {
+        setAuthModalOpen(false);
+        setViewMode("workspace");
       }
     } catch (err) {
-      alert("Connection error: " + (err.message || "Failed to reach Supabase server. Check if project is active."));
-    }
-  }
-
-  async function signup() {
-    setErrorMessage("");
-    try {
-      const {error} = await supabase.auth.signUp({email,password});
-      if(error) {
-        alert(error.message);
-      } else {
-        alert("Check your email if confirmation is enabled.");
-      }
-    } catch (err) {
-      alert("Connection error: " + (err.message || "Failed to reach Supabase server. Check if project is active."));
-    }
-  }
-
-  async function upload(e) {
-    const file=e.target.files[0]; if(!file) return;
-    const fd=new FormData(); fd.append("file",file);
-    setBusy(true);
-    try {
-      const r=await api("/api/documents/upload",{method:"POST",body:fd});
-      const data=await r.json().catch(() => ({}));
-      if(!r.ok) alert(data.detail || "Upload failed"); else refresh();
-    } catch (err) {
-      alert("Network error: Backend server unreachable. Make sure the API is running.");
+      setAuthError(
+        err.message || "Failed to reach Supabase server. Please ensure the project is active."
+      );
     } finally {
-      setBusy(false);
+      setAuthBusy(false);
+    }
+  }
+
+  async function handleSignup(email, password) {
+    setAuthError("");
+    setAuthBusy(true);
+    try {
+      const { data, error } = await supabase.auth.signUp({ email, password });
+      if (error) {
+        setAuthError(error.message);
+      } else {
+        if (data?.session) {
+          setAuthModalOpen(false);
+          setViewMode("workspace");
+        } else {
+          alert("Account created! Please check your email inbox to verify your account.");
+          setAuthModalOpen(false);
+        }
+      }
+    } catch (err) {
+      setAuthError(err.message || "Failed to create account. Please try again.");
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function handleSignOut() {
+    try {
+      await supabase.auth.signOut();
+    } catch (err) {
+      console.warn("Sign out error:", err);
+    }
+    setSession(null);
+    setActiveChat(null);
+    setMessages([]);
+    setDocs([]);
+    setChats([]);
+    setViewMode("landing");
+  }
+
+  // Document management handlers
+  async function handleUploadFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const fd = new FormData();
+    fd.append("file", file);
+    setUploadBusy(true);
+
+    try {
+      const res = await api("/api/documents/upload", {
+        method: "POST",
+        body: fd,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.detail || "Document upload failed");
+      } else {
+        await refreshData();
+      }
+    } catch (err) {
+      alert("Network error: Backend server unreachable. Please verify API is running.");
+    } finally {
+      setUploadBusy(false);
       e.target.value = "";
     }
   }
 
-  async function newChat() {
+  async function handleDeleteDocument(documentId) {
     try {
-      const r=await api("/api/chat/conversations",{
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({title:"New chat"})
+      const res = await api(`/api/documents/${documentId}`, {
+        method: "DELETE",
       });
-      const c=await r.json();
-      if (r.ok && c?.id) {
-        setChats([c,...chats]);
+      if (res.ok) {
+        setDocs((prev) => prev.filter((d) => d.id !== documentId));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        alert(data.detail || "Could not delete document");
+      }
+    } catch (err) {
+      alert("Network error while deleting document.");
+    }
+  }
+
+  // Chat handlers
+  async function handleNewChat() {
+    try {
+      const res = await api("/api/chat/conversations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "New chat" }),
+      });
+      const c = await res.json();
+      if (res.ok && c?.id) {
+        setChats([c, ...chats]);
         openChat(c);
       } else {
-        alert(c.detail || "Could not create chat");
+        alert(c.detail || "Could not create chat session");
       }
     } catch (err) {
       alert("Network error: Backend server unreachable.");
     }
   }
 
-  async function openChat(c) {
-    setChat(c);
+  async function openChat(chatItem) {
+    setActiveChat(chatItem);
     try {
-      const r=await api(`/api/chat/conversations/${c.id}/messages`);
-      if (r.ok) {
-        const msgs = await r.json();
+      const res = await api(`/api/chat/conversations/${chatItem.id}/messages`);
+      if (res.ok) {
+        const msgs = await res.json();
         setMessages(Array.isArray(msgs) ? msgs : []);
       }
     } catch (err) {
-      console.error("Failed to load messages:", err);
+      console.error("Failed to load conversation messages:", err);
     }
   }
 
-  async function send() {
-    if(!question.trim() || !chat) return;
-    const q=question; setQuestion("");
-    setMessages(m=>[...m,{role:"user",content:q}]); setBusy(true);
+  async function handleSendMessage(promptText) {
+    if (!promptText.trim() || !activeChat) return;
+
+    // Optimistically append user message
+    setMessages((prev) => [...prev, { role: "user", content: promptText }]);
+    setBusy(true);
+
     try {
-      const r=await api("/api/chat/message",{
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({conversation_id:chat.id,content:q})
+      const res = await api("/api/chat/message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversation_id: activeChat.id,
+          content: promptText,
+        }),
       });
-      const data=await r.json();
-      if(!r.ok) {
-        alert(data.detail || "Request failed");
+
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.detail || "Failed to generate answer");
       } else {
-        setMessages(m=>[...m,{role:"assistant",content:data.answer,sources:data.sources}]);
-        refresh();
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: data.answer,
+            sources: data.sources,
+          },
+        ]);
+        refreshData();
       }
     } catch (err) {
       alert("Network error: Backend server unreachable.");
@@ -198,67 +327,61 @@ function App() {
     }
   }
 
-  if(!session) return (
-    <main className="auth">
-      <form onSubmit={login}>
-        <h1>DocRAG</h1>
-        {errorMessage && <div style={{color: "#f87171", fontSize: "0.9rem", textAlign: "center"}}>{errorMessage}</div>}
-        <input placeholder="Email" type="email" required value={email} onChange={e=>setEmail(e.target.value)}/>
-        <input type="password" placeholder="Password" required value={password} onChange={e=>setPassword(e.target.value)}/>
-        <button type="submit">Login</button>
-        <button type="button" onClick={signup}>Create account</button>
-      </form>
-    </main>
-  );
-
+  // Render view
   return (
-    <div className="app">
-      <aside>
-        <h2>DocRAG</h2>
-        <button onClick={newChat}>+ New chat</button>
-        <h3>Chats</h3>
-        {chats.map(c=><div className="item" key={c.id} onClick={()=>openChat(c)}>{c.title}</div>)}
-        <h3>Documents</h3>
-        <label className="upload">{busy?"Processing...":"Upload document"}<input type="file" accept=".pdf,.docx,.txt,.md" onChange={upload}/></label>
-        {docs.map(d=><div className="item" key={d.id}>📄 {d.filename}<small>{d.status}</small></div>)}
-        <button onClick={()=>supabase.auth.signOut()}>Logout</button>
-      </aside>
-      <main className="chat">
-        {!chat ? (
-          <div className="empty">
-            <h1>Chat with your documents</h1>
-            <p>Upload a PDF, DOCX, TXT or Markdown file, then create a chat.</p>
-          </div>
-        ) : (
-          <>
-            <div className="messages">
-              {messages.map((m,i)=>(
-                <div className={m.role} key={i}>
-                  <div>{m.content}</div>
-                  {m.sources?.length>0 && (
-                    <small>
-                      Sources: {m.sources.map((s,j)=>(
-                        <span key={j}>{s.filename}{s.page_number?` p.${s.page_number}`:""} </span>
-                      ))}
-                    </small>
-                  )}
-                </div>
-              ))}
-            </div>
-            <div className="composer">
-              <input
-                value={question}
-                onChange={e=>setQuestion(e.target.value)}
-                onKeyDown={e=>e.key==="Enter"&&!busy&&send()}
-                placeholder="Ask about your documents..."
-                disabled={busy}
-              />
-              <button onClick={send} disabled={busy}>{busy ? "Thinking..." : "Send"}</button>
-            </div>
-          </>
-        )}
-      </main>
-    </div>
+    <>
+      {viewMode === "landing" ? (
+        <>
+          <Navbar
+            session={session}
+            onOpenAuth={(mode) => {
+              setAuthModalMode(mode);
+              setAuthError("");
+              setAuthModalOpen(true);
+            }}
+            onOpenWorkspace={() => setViewMode("workspace")}
+            onSignOut={handleSignOut}
+          />
+          <LandingPage
+            session={session}
+            onOpenAuth={(mode) => {
+              setAuthModalMode(mode);
+              setAuthError("");
+              setAuthModalOpen(true);
+            }}
+            onOpenWorkspace={() => setViewMode("workspace")}
+          />
+        </>
+      ) : (
+        <Workspace
+          session={session}
+          docs={docs}
+          chats={chats}
+          activeChat={activeChat}
+          messages={messages}
+          busy={busy}
+          uploadBusy={uploadBusy}
+          onNewChat={handleNewChat}
+          onSelectChat={openChat}
+          onSendMessage={handleSendMessage}
+          onUploadFile={handleUploadFile}
+          onDeleteDocument={handleDeleteDocument}
+          onSignOut={handleSignOut}
+          onBackToLanding={() => setViewMode("landing")}
+        />
+      )}
+
+      {/* Global Auth Modal */}
+      <AuthModal
+        isOpen={authModalOpen}
+        initialMode={authModalMode}
+        onClose={() => setAuthModalOpen(false)}
+        onLogin={handleLogin}
+        onSignup={handleSignup}
+        errorMessage={authError}
+        isBusy={authBusy}
+      />
+    </>
   );
 }
 
